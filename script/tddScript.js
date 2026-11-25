@@ -3,9 +3,7 @@ import path from 'path';
 import { spawn } from 'cross-spawn';
 import { TddStore, nowIso } from './tddStore.js';
 import LocalTddStore from './localTddStore.js';
-import { getCommitAuthor, getCommitDate, captureGitContext } from './gitContext.js';
-import { repositoryFromRemote } from './branch-push-payload.js';
-import NeonActivityStore from './neonActivityStore.js';
+import { captureGitContext } from './gitContext.js';
 import { redactError } from './db-security.js';
 
 const COMMAND = 'jest';
@@ -39,7 +37,7 @@ const readJSONFile = (filePath) => {
   return JSON.parse(rawData);
 };
 
-async function extractAndAddObject(reportFile, store, neonStore = null) {
+async function extractAndAddObject(reportFile, store) {
   const startTime = nowIso();
 
   let childResult;
@@ -139,45 +137,12 @@ async function extractAndAddObject(reportFile, store, neonStore = null) {
       executedAt: endTime
     });
 
-    console.log(
-      `[TDD Logging] Ejecución guardada: executionId=${executionId}, branch=${gitContext.branchName || '(no branch)'}, commit=${commitId || '(manual)'}, testsPassed=${testsPassed}, testsFailed=${testsFailed}, testsTotal=${testsTotal}`
-    );
+  console.log(
+    `[TDD Logging] Ejecución guardada: executionId=${executionId}, branch=${gitContext.branchName || '(no branch)'}, commit=${commitId || '(manual)'}, testsPassed=${testsPassed}, testsFailed=${testsFailed}, testsTotal=${testsTotal}`
+  );
   } catch (persistError) {
     logError('No se pudo guardar la ejecución:', persistError);
     persistenceError = persistError;
-  }
-
-  if (neonStore) {
-    try {
-      const repository = gitContext.remoteUrl
-        ? repositoryFromRemote(gitContext.remoteUrl)
-        : null;
-      const commit = gitContext.headSha
-        ? {
-            sha: gitContext.headSha,
-            parentSha: gitContext.parents?.[0] || null,
-            author: getCommitAuthor({ sha: gitContext.headSha }) || null,
-            message: gitContext.commitMessage || null,
-            committedAt: getCommitDate({ sha: gitContext.headSha }) || null
-          }
-        : null;
-      await neonStore.saveTestExecution({
-        repository,
-        branch: gitContext.branchName
-          ? { name: gitContext.branchName, forkCommitSha: gitContext.headSha }
-          : null,
-        commit,
-        execution: {
-          testsTotal,
-          testsPassed,
-          testsFailed,
-          executedAt: endTime
-        }
-      });
-    } catch (error) {
-      persistenceError = error;
-      logError('No se pudo enviar la ejecución a Neon:', error);
-    }
   }
 
   return {
@@ -195,13 +160,12 @@ async function extractAndAddObject(reportFile, store, neonStore = null) {
   };
 }
 
-async function main(store = new LocalTddStore(), run = extractAndAddObject, neonStore = null) {
+async function main(store = new LocalTddStore(), run = extractAndAddObject) {
   const reportFile = path.join(
     process.cwd(),
     'script',
     'report.json'
   );
-  let ownedNeonStore = false;
 
   try {
     await store.initialize();
@@ -212,11 +176,7 @@ async function main(store = new LocalTddStore(), run = extractAndAddObject, neon
   }
 
   try {
-    if (!neonStore && run === extractAndAddObject) {
-      neonStore = new NeonActivityStore();
-      ownedNeonStore = true;
-    }
-    const result = await run(reportFile, store, neonStore);
+    const result = await run(reportFile, store);
 
     console.log('');
     console.log('TDD execution result:');
@@ -232,9 +192,6 @@ async function main(store = new LocalTddStore(), run = extractAndAddObject, neon
     process.exitCode = 1;
   } finally {
     await store.close();
-    if (ownedNeonStore && neonStore) {
-      await neonStore.close();
-    }
   }
 }
 
